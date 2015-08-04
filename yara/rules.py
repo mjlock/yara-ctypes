@@ -24,12 +24,12 @@ else:
 class Compiler:
     """Represents a yara compiler"""
 
-    def __init__(self, externals, error_report_function):
+    def __init__(self, externals, error_report_function, allow_includes=True):
         self._compiler = POINTER(YR_COMPILER)()
         if yr_compiler_create(self._compiler) != ERROR_SUCCESS:
             raise Exception("error creating compiler")
 
-        self._compiler.allow_includes = True
+        self._compiler.allow_includes = allow_includes
 
         # Process the externals.
         for key, value in externals.items():
@@ -211,11 +211,11 @@ class Rules():
     """Rules represent compiled rules."""
     def __init__(self,
                  compiled_rules_path=None,
-                 paths={},
-                 externals={},
+                 paths=None,
+                 externals=None,
                  #defines={},
-                 #include_path=[],
-                 strings=[],
+                 includes=True,
+                 strings=None,
                  fast_match=False,
                  report_function=None,
                  callback=None):
@@ -223,9 +223,8 @@ class Rules():
 
         Options:
             paths          - {namespace:rules_path,...}
-            include_path  - a list of paths to search for given #include
-                             directives. 
-            defines        - key:value defines for the preprocessor.  Sub in 
+            includes       - <bool> True if #include directives are allowed
+            defines        - key:value defines for the preprocessor.  Sub in
                              strings or macros defined in your rules files.
             strings        - [(namespace, filename, rules_string),...]
             externals      - define boolean, integer, or string variables
@@ -239,6 +238,13 @@ class Rules():
             filename - filename which the rules_string came from
             rules_string - the text read from a .yar file
         """
+        if paths is None:
+            paths = {}
+        if externals is None:
+            externals = {}
+        if strings is None:
+            strings = []
+
         if compiled_rules_path is not None and len(paths) != 0:
             raise ValueError("one of compiled_rules_path, paths must be set")
 
@@ -259,18 +265,19 @@ class Rules():
                 raise Exception("Error loading compiled rules")
 
             for k, value in externals.items():
-                if type(v) in INT_TYPES:
-                    yr_rules_define_integer_variable(self._rules, k, v)
-                elif type(v) is bool:
-                    yr_rules_define_boolean_variable(self._rules, k, v)
-                elif type(v) is str:
-                    yr_rules_define_string_variable(self._rules, k, v)
+                if type(value) in INT_TYPES:
+                    yr_rules_define_integer_variable(self._rules, k, value)
+                elif type(value) is bool:
+                    yr_rules_define_boolean_variable(self._rules, k, value)
+                elif type(value) is str:
+                    yr_rules_define_string_variable(self._rules, k, value)
                 else:
                     raise TypeError(\
                         "External values must be types int, long, bool or str")
         else:
             # Compile the rules from source.
-            compiler = Compiler(externals, self._error_report_function)
+            compiler = Compiler(externals, self._error_report_function,
+                                allow_includes=includes)
             for namespace, path in paths.items():
                 compiler.compile_file(path, namespace=namespace)
 
@@ -437,13 +444,12 @@ class Rules():
 
 YARA_RULES_ROOT = os.environ.get('YARA_RULES',
                     os.path.join(os.path.dirname(__file__), 'rules'))
-INCLUDE_PATH = os.environ.get('PATH','.').split(':')
 
 
 def load_rules(rules_rootpath=YARA_RULES_ROOT,
-               blacklist=[],
-               whitelist=[],
-               include_path=INCLUDE_PATH,
+               blacklist=None,
+               whitelist=None,
+               includes=True,
                **rules_kwargs):
     """A simple way to build a complex yara Rules object with strings equal to
     [(namespace:filepath:source),...]
@@ -466,11 +472,17 @@ def load_rules(rules_rootpath=YARA_RULES_ROOT,
        rules_rootpath - root dir to search for YARA rules files
        blacklist - namespaces "starting with" to exclude
        whitelist - namespaces "starting with" to include
+       includes  - True if #include directives are allowed
 
     Rule options:
         externals - define boolean, integer, or string variables {var:val,...}
         fast_match - enable fast matching in the YARA context
     """
+    if blacklist is None:
+        blacklist = []
+    if whitelist is None:
+        whitelist = []
+
     whitelist = set(whitelist)
     blacklist = set(blacklist)
 
@@ -499,9 +511,7 @@ def load_rules(rules_rootpath=YARA_RULES_ROOT,
 
             paths[namespace] = os.path.join(path, filename)
 
-    include_path = copy.copy(include_path)
-    include_path.append(rules_rootpath)
-    rules = Rules(paths=paths, include_path=include_path, **rules_kwargs)
+    rules = Rules(paths=paths, includes=includes, **rules_kwargs)
     c = rules.context
     rules.free()
     return rules
